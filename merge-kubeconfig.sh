@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-# Validate input
+# Step 1: Validate input
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 /path/to/kubeconfig"
   exit 1
@@ -24,46 +24,49 @@ if [[ ! -f "${KUBECONFIG_TO_MERGE}" ]]; then
   exit 1
 fi
 
-# Step 2: Backup the default kubeconfig
+# Step 2: Backup your default kubeconfig
 timestamp=$(date "+%d-%m-%Y_%H-%S")
 backup_file="${HOME}/.kube/config_backup_${timestamp}"
 cp "${DEFAULT_KUBECONFIG}" "${backup_file}"
 echo "Created backup of default kubeconfig at: ${backup_file}"
 
-# Step 2: Capture existing contexts in the default config
-
-export KUBECONFIG="${DEFAULT_KUBECONFIG}"
-existing_contexts=$(kubectl config get-contexts -o name 2>/dev/null || true)
-
-# Step 4: Create a temp file and copy the kubeconfig to merge
+# Step 3: Rename contexts in the file to be merged
 temp_file="$(mktemp)"
 cp "${KUBECONFIG_TO_MERGE}" "${temp_file}"
 
-# Point kubectl to the temp file
 export KUBECONFIG="${temp_file}"
 merge_contexts=$(kubectl config get-contexts -o name 2>/dev/null || true)
 
-# Step 5: Remove any context that already exists in default config
 for ctx in ${merge_contexts}; do
+  # Get the cluster name associated with the context
+  cluster_name=$(kubectl config view -o jsonpath="{.contexts[?(@.name=='${ctx}')].context.cluster}")
+  
+  if [[ -n "${cluster_name}" ]]; then
+    new_ctx_name="${cluster_name}"
+    echo "Renaming context '${ctx}' to '${new_ctx_name}' in merge file..."
+    kubectl config rename-context "${ctx}" "${new_ctx_name}"
+  else
+    echo "Warning: Could not determine the cluster name for context '${ctx}'. Skipping rename."
+  fi
+done
+
+# Step 4: Capture existing contexts in the default config
+export KUBECONFIG="${DEFAULT_KUBECONFIG}"
+existing_contexts=$(kubectl config get-contexts -o name 2>/dev/null || true)
+
+# Step 5: Remove duplicates
+export KUBECONFIG="${temp_file}"
+for ctx in $(kubectl config get-contexts -o name 2>/dev/null || true); do
   if echo "${existing_contexts}" | grep -q "^${ctx}$"; then
     echo "Context '${ctx}' already exists in default config. Removing from merge file..."
-    # Delete the context in the temp file
     kubectl config delete-context "${ctx}" 1>/dev/null
-
-    # Optional (more advanced): 
-    # If the cluster or user is not referenced by any other context in this temp file,
-    # you may also want to remove them:
-    #   kubectl config delete-cluster <cluster-name>
-    #   kubectl config unset users.<user-name>
   fi
 done
 
 # Step 6: Merge the trimmed temp file into the default config
-# Re-point KUBECONFIG to include both files
 KUBECONFIG="${DEFAULT_KUBECONFIG}:${temp_file}" \
-  kubectl config view --flatten > "$HOME/.kube/config.merged"
+  kubectl config view --flatten > "${HOME}/.kube/config.merged"
 
-# Overwrite the default config with the merged result
 mv "${HOME}/.kube/config.merged" "${DEFAULT_KUBECONFIG}"
 
 # Cleanup

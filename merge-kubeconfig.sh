@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#
+
 # Usage:
 #   ./merge-kubeconfig.sh /path/to/other/kubeconfig
 #
@@ -54,13 +54,20 @@ for ctx in ${merge_contexts}; do
     # Rename the context
     kubectl config rename-context "${ctx}" "${new_ctx_name}"
 
-    # Rename the user and update the context to reference the new user
-    kubectl config set-credentials "${new_user_name}" --user="${current_user}" >/dev/null
-    kubectl config set-context "${new_ctx_name}" --user="${new_user_name}" >/dev/null
+    # Use yq to rename the user directly in the kubeconfig file
+    yq eval -i "
+      .users[] |= (
+        select(.name == \"${current_user}\").name = \"${new_user_name}\"
+      ) |
+      .contexts[] |= (
+        select(.name == \"${new_ctx_name}\").context.user = \"${new_user_name}\"
+      )
+    " "${temp_file}"
   else
     echo "Warning: Could not determine the cluster or user for context '${ctx}'. Skipping rename."
   fi
 done
+
 
 # --- Step 4: Capture existing contexts in the default config ---
 export KUBECONFIG="${DEFAULT_KUBECONFIG}"

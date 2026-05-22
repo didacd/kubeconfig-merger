@@ -40,7 +40,7 @@ backup_config() {
   [[ ! -f "${DEFAULT_KUBECONFIG}" ]] && return
 
   local timestamp
-  timestamp=$(date "+%d-%m-%Y_%H-%M-%S")
+  timestamp=$(date "+%Y-%m-%d_%H-%M-%S")
   BACKUP_FILE="${HOME}/.kube/config_backup_${timestamp}"
 
   cp -p "${DEFAULT_KUBECONFIG}" "${BACKUP_FILE}"
@@ -49,7 +49,9 @@ backup_config() {
 }
 
 cleanup() {
-  [[ -n "${MERGED_TMP_FILE}" && -f "${MERGED_TMP_FILE}" ]] && rm -f "${MERGED_TMP_FILE}"
+  if [[ -n "${MERGED_TMP_FILE}" && -f "${MERGED_TMP_FILE}" ]]; then
+    rm -f "${MERGED_TMP_FILE}"
+  fi
 }
 
 merge_and_install_config() {
@@ -59,8 +61,10 @@ merge_and_install_config() {
   KUBECONFIG="${DEFAULT_KUBECONFIG}:${kubeconfig_file}" \
     kubectl config view --merge --flatten >"${MERGED_TMP_FILE}"
 
-  [[ ! -s "${MERGED_TMP_FILE}" ]] && error "Merged kubeconfig is empty."
-  kubectl --kubeconfig="${MERGED_TMP_FILE}" config view >/dev/null
+  [[ ! -s "${MERGED_TMP_FILE}" ]] && error "Merged kubeconfig is empty. Verify both source files are valid kubeconfig files."
+  if ! kubectl --kubeconfig="${MERGED_TMP_FILE}" config view >/dev/null 2>&1; then
+    error "Merged kubeconfig validation failed."
+  fi
 
   chmod 600 "${MERGED_TMP_FILE}"
   mv "${MERGED_TMP_FILE}" "${DEFAULT_KUBECONFIG}"

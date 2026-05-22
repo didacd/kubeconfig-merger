@@ -6,11 +6,10 @@
 #
 # Features:
 #   1. Backup the default kubeconfig.
-#   2. Rename contexts → use cluster name as context name.
-#   3. Rename users → <cluster>-<original_user>.
-#   4. Check client certificate expiration.
-#   5. Remove duplicate contexts.
-#   6. Merge safely into ~/.kube/config.
+#   2. Use standard kubectl merge flow.
+#   3. Write merged output to a temporary file first.
+#   4. Validate merged kubeconfig before replacing destination.
+#   5. Atomically replace ~/.kube/config only on success.
 #
 
 set -euo pipefail
@@ -30,92 +29,42 @@ error() {
 # ------------------------------
 DEFAULT_KUBECONFIG="${HOME}/.kube/config"
 KUBECONFIG_TO_MERGE="${1:-}"
+BACKUP_FILE=""
+MERGED_TMP_FILE=""
 
 # ------------------------------
 # Functions
 # ------------------------------
 
 backup_config() {
+  [[ ! -f "${DEFAULT_KUBECONFIG}" ]] && return
+
   local timestamp
   timestamp=$(date "+%d-%m-%Y_%H-%M-%S")
-  local backup_file="${HOME}/.kube/config_backup_${timestamp}"
+  BACKUP_FILE="${HOME}/.kube/config_backup_${timestamp}"
 
-  cp "${DEFAULT_KUBECONFIG}" "${backup_file}"
-  info "Backup created: ${backup_file}"
+  cp -p "${DEFAULT_KUBECONFIG}" "${BACKUP_FILE}"
+  info "Backup created: ${BACKUP_FILE}"
 }
 
-rename_contexts_and_users() {
-  local kubeconfig_file="$1"
-  export KUBECONFIG="${kubeconfig_file}"
-
-  for ctx in $(kubectl config get-contexts -o name 2>/dev/null || true); do
-    local cluster user new_ctx new_user
-    cluster=$(kubectl config view -o jsonpath="{.contexts[?(@.name=='${ctx}')].context.cluster}")
-    user=$(kubectl config view -o jsonpath="{.contexts[?(@.name=='${ctx}')].context.user}")
-
-    if [[ -z "${cluster}" || -z "${user}" ]]; then
-      warn "Skipping context '${ctx}' (missing cluster or user)."
-      continue
-    fi
-
-    new_ctx="${cluster}"
-    new_user="${cluster}-${user}"
-
-    info "Renaming context '${ctx}' → '${new_ctx}', user → '${new_user}'"
-
-    kubectl config rename-context "${ctx}" "${new_ctx}"
-
-    yq eval -i "
-      .users[] |= (select(.name == \"${user}\").name = \"${new_user}\") |
-      .contexts[] |= (select(.name == \"${new_ctx}\").context.user = \"${new_user}\")
-    " "${kubeconfig_file}"
-
-    check_certificate "${kubeconfig_file}" "${new_user}"
-  done
+cleanup() {
+  [[ -n "${MERGED_TMP_FILE}" && -f "${MERGED_TMP_FILE}" ]] && rm -f "${MERGED_TMP_FILE}"
 }
 
-check_certificate() {
+merge_and_install_config() {
   local kubeconfig_file="$1"
-  local user="$2"
+  MERGED_TMP_FILE="$(mktemp "${HOME}/.kube/config.merged.XXXXXX")"
 
-  local cert_file cert_data
-  cert_file=$(yq eval ".users[] | select(.name==\"${user}\").user[\"client-certificate\"]" "${kubeconfig_file}")
-  cert_data=$(yq eval ".users[] | select(.name==\"${user}\").user[\"client-certificate-data\"]" "${kubeconfig_file}")
-
-  if [[ "${cert_file}" != "null" && -f "${cert_file}" ]]; then
-    info "Checking certificate for ${user} (from file: ${cert_file})"
-    openssl x509 -in "${cert_file}" -noout -dates
-  elif [[ "${cert_data}" != "null" ]]; then
-    info "Checking embedded certificate for ${user}"
-    echo "${cert_data}" | base64 -d | openssl x509 -noout -dates
-  else
-    warn "No client certificate found for user '${user}'."
-  fi
-}
-
-remove_duplicates() {
-  local kubeconfig_file="$1"
-
-  export KUBECONFIG="${DEFAULT_KUBECONFIG}"
-  local existing
-  existing=$(kubectl config get-contexts -o name 2>/dev/null || true)
-
-  export KUBECONFIG="${kubeconfig_file}"
-  for ctx in $(kubectl config get-contexts -o name 2>/dev/null || true); do
-    if echo "${existing}" | grep -q "^${ctx}$"; then
-      warn "Removing duplicate context '${ctx}' from merge file."
-      kubectl config delete-context "${ctx}" >/dev/null
-    fi
-  done
-}
-
-merge_configs() {
-  local kubeconfig_file="$1"
   KUBECONFIG="${DEFAULT_KUBECONFIG}:${kubeconfig_file}" \
-    kubectl config view --flatten >"${HOME}/.kube/config.merged"
+    kubectl config view --merge --flatten >"${MERGED_TMP_FILE}"
 
-  mv "${HOME}/.kube/config.merged" "${DEFAULT_KUBECONFIG}"
-  info "Merge completed. Default kubeconfig updated."
+  [[ ! -s "${MERGED_TMP_FILE}" ]] && error "Merged kubeconfig is empty."
+  kubectl --kubeconfig="${MERGED_TMP_FILE}" config view >/dev/null
+
+  chmod 600 "${MERGED_TMP_FILE}"
+  mv "${MERGED_TMP_FILE}" "${DEFAULT_KUBECONFIG}"
+  MERGED_TMP_FILE=""
+  info "Merge completed. Default kubeconfig updated safely."
 }
 
 # ------------------------------
@@ -125,17 +74,13 @@ main() {
   [[ -z "${KUBECONFIG_TO_MERGE}" ]] && error "Usage: $0 /path/to/kubeconfig"
   [[ ! -f "${KUBECONFIG_TO_MERGE}" ]] && error "File not found: ${KUBECONFIG_TO_MERGE}"
 
+  trap cleanup EXIT
+  mkdir -p "${HOME}/.kube"
+
   backup_config
+  [[ -f "${DEFAULT_KUBECONFIG}" ]] || touch "${DEFAULT_KUBECONFIG}"
 
-  local tmp
-  tmp="$(mktemp)"
-  cp "${KUBECONFIG_TO_MERGE}" "${tmp}"
-
-  rename_contexts_and_users "${tmp}"
-  remove_duplicates "${tmp}"
-  merge_configs "${tmp}"
-
-  rm -f "${tmp}"
+  merge_and_install_config "${KUBECONFIG_TO_MERGE}"
   info "All done ✅"
 }
 

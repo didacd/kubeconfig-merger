@@ -44,6 +44,7 @@ backup_config() {
   BACKUP_FILE="${HOME}/.kube/config_backup_${timestamp}"
 
   cp -p "${DEFAULT_KUBECONFIG}" "${BACKUP_FILE}"
+  chmod 600 "${BACKUP_FILE}"
   info "Backup created: ${BACKUP_FILE}"
 }
 
@@ -78,7 +79,10 @@ main() {
   mkdir -p "${HOME}/.kube"
 
   backup_config
-  [[ -f "${DEFAULT_KUBECONFIG}" ]] || touch "${DEFAULT_KUBECONFIG}"
+  if [[ ! -f "${DEFAULT_KUBECONFIG}" ]]; then
+    touch "${DEFAULT_KUBECONFIG}"
+    chmod 600 "${DEFAULT_KUBECONFIG}"
+  fi
 
   merge_and_install_config "${KUBECONFIG_TO_MERGE}"
   info "All done ✅"

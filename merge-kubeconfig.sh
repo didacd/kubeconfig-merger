@@ -43,7 +43,7 @@ backup_config() {
   timestamp=$(date "+%d-%m-%Y_%H-%M-%S")
   BACKUP_FILE="${HOME}/.kube/config_backup_${timestamp}"
 
-  cp -p "${DEFAULT_KUBECONFIG}" "${BACKUP_FILE}"
+  cp "${DEFAULT_KUBECONFIG}" "${BACKUP_FILE}"
   chmod 600 "${BACKUP_FILE}"
   info "Backup created: ${BACKUP_FILE}"
 }
@@ -81,6 +81,7 @@ main() {
 
   trap cleanup EXIT
   mkdir -p "${HOME}/.kube"
+  chmod 700 "${HOME}/.kube"
 
   backup_config
   if [[ ! -f "${DEFAULT_KUBECONFIG}" ]]; then

@@ -56,12 +56,12 @@ cleanup() {
 
 merge_and_install_config() {
   local kubeconfig_file="$1"
-  MERGED_TMP_FILE="$(mktemp "${HOME}/.kube/config.merged.XXXXXX")"
+  MERGED_TMP_FILE="$(umask 077 && mktemp "${HOME}/.kube/config.merged.XXXXXX")"
 
   KUBECONFIG="${DEFAULT_KUBECONFIG}:${kubeconfig_file}" \
     kubectl config view --merge --flatten >"${MERGED_TMP_FILE}"
 
-  [[ ! -s "${MERGED_TMP_FILE}" ]] && error "Merged kubeconfig is empty. Verify the incoming kubeconfig file is valid."
+  [[ ! -s "${MERGED_TMP_FILE}" ]] && error "Merged kubeconfig is empty. Verify both default and incoming kubeconfig files are valid."
   if ! kubectl --kubeconfig="${MERGED_TMP_FILE}" config view >/dev/null 2>&1; then
     error "Merged kubeconfig validation failed."
   fi
